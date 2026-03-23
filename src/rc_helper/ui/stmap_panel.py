@@ -6,32 +6,36 @@ Panel for selecting the ST map folder and previewing matched pairs.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.file_matcher import MatchedSet, find_matched_sets
 
+_COL_SOURCE = 0
+_COL_STMAP  = 1
+_COL_XMP    = 2
+
 
 class StmapPanel(QGroupBox):
-    """Folder selector for ST maps and a matched-pairs preview list."""
+    """Folder selector for ST maps and a matched-pairs preview table."""
 
     stmap_dir_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("ST Maps", parent)
+        super().__init__("ST Maps & File Pairs", parent)
         self._source_dir: str = ""
         self._build_ui()
 
@@ -63,12 +67,24 @@ class StmapPanel(QGroupBox):
         self._summary_label.setStyleSheet("color: #96a4b5; font-size: 11px;")
         root.addWidget(self._summary_label)
 
-        # Pair list — let it fill available vertical space
-        self._pair_list = QListWidget()
-        self._pair_list.setMinimumHeight(260)
-        self._pair_list.setAlternatingRowColors(True)
-        self._pair_list.setUniformItemSizes(True)
-        root.addWidget(self._pair_list, stretch=1)
+        # Pair table
+        self._pair_tree = QTreeWidget()
+        self._pair_tree.setColumnCount(3)
+        self._pair_tree.setHeaderLabels(["Source Image", "ST Map", "XMP"])
+        self._pair_tree.setRootIsDecorated(False)
+        self._pair_tree.setUniformRowHeights(True)
+        self._pair_tree.setAlternatingRowColors(True)
+        self._pair_tree.setSelectionMode(QAbstractItemView.NoSelection)
+        self._pair_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._pair_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._pair_tree.setMinimumHeight(600)
+
+        hdr = self._pair_tree.header()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+
+        root.addWidget(self._pair_tree, stretch=1)
 
     # ── Slots ─────────────────────────────────────────────────────────────
 
@@ -99,8 +115,9 @@ class StmapPanel(QGroupBox):
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _refresh_pairs(self) -> None:
-        self._pair_list.clear()
+        self._pair_tree.clear()
         if not self._source_dir:
+            self._summary_label.setStyleSheet("color: #96a4b5; font-size: 11px;")
             self._summary_label.setText("No source folder selected.")
             return
 
@@ -108,6 +125,7 @@ class StmapPanel(QGroupBox):
         try:
             sets: list[MatchedSet] = find_matched_sets(self._source_dir, stmap_dir)
         except FileNotFoundError as exc:
+            self._summary_label.setStyleSheet("color: #ff7b8a; font-size: 11px;")
             self._summary_label.setText(f"Error: {exc}")
             return
 
@@ -115,18 +133,22 @@ class StmapPanel(QGroupBox):
         without_stmap = len(sets) - with_stmap
         with_xmp = sum(1 for s in sets if s.has_xmp)
 
-        summary = f"{len(sets)} images | {with_stmap} with ST map | {with_xmp} with XMP"
+        summary = f"{len(sets)} images  |  {with_stmap} ST maps  |  {with_xmp} XMP"
         if without_stmap:
-            summary += f"  —  {without_stmap} missing ST map (undistortion will be skipped for those)"
+            summary += f"  —  {without_stmap} missing ST map (undistortion skipped)"
             self._summary_label.setStyleSheet("color: #e3a03a; font-size: 11px;")
         else:
             self._summary_label.setStyleSheet("color: #96a4b5; font-size: 11px;")
         self._summary_label.setText(summary)
 
         for ms in sets:
-            stmap_flag = "✓ stmap" if ms.has_stmap else "✗ stmap"
-            xmp_flag = "✓ xmp" if ms.has_xmp else "✗ xmp"
-            item = QListWidgetItem(f"{ms.source.name}  [{stmap_flag}]  [{xmp_flag}]")
+            stmap_text = ms.stmap.name if ms.has_stmap else "—"
+            xmp_text   = ms.xmp.name  if ms.has_xmp   else "—"
+            item = QTreeWidgetItem([ms.source.name, stmap_text, xmp_text])
+
             if not ms.has_stmap:
-                item.setForeground(Qt.GlobalColor.darkYellow)
-            self._pair_list.addItem(item)
+                # Amber tint for rows missing an ST map
+                for col in range(3):
+                    item.setForeground(col, Qt.GlobalColor.darkYellow)
+
+            self._pair_tree.addTopLevelItem(item)
