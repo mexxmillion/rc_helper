@@ -59,15 +59,23 @@ class CameraData:
     @property
     def euler_xyz_deg(self) -> tuple[float, float, float]:
         """
-        Camera-to-world rotation as Maya-compatible XYZ Euler angles (degrees).
+        Camera orientation as Maya XYZ Euler angles (degrees).
+
+        RC camera space uses OpenCV convention: X right, Y down, Z into scene.
+        Maya camera space:                       X right, Y up,   Z out of scene.
+        Conversion: post-multiply R_c2w by diag(1, -1, -1) to flip Y and Z.
         """
-        R = self.rotation_c2w
+        flip = np.diag([1.0, -1.0, -1.0])
+        R = self.rotation_c2w @ flip
         return _rotation_matrix_to_euler_xyz(R)
 
     @property
     def position_cm(self) -> np.ndarray:
-        """Camera position in centimetres (Maya default unit)."""
-        return self.position * 100.0
+        """
+        Camera position passed through as-is (RC metres treated as Maya units).
+        VFX pipelines work at metre scale in Maya even when the unit label is cm.
+        """
+        return self.position
 
 
 def parse_xmp(xmp_path: str | Path) -> CameraData:
