@@ -1,0 +1,17 @@
+# RC Helper — Python dependencies
+#
+# Install into a Conda VFX environment that already provides:
+#   - OpenImageIO (oiiotool CLI + Python bindings)
+#   - OpenColorIO (PyOpenColorIO)
+#   - numpy
+#
+# Additional packages installable via conda or pip:
+
+PySide6>=6.5.0
+
+# numpy is typically present in VFX envs; listed for completeness
+numpy>=1.24.0
+
+# ── Optional (uncomment if not provided by the VFX env) ──────────────
+# openimageio   # via conda-forge: conda install -c conda-forge openimageio
+# opencolorio   # via conda-forge: conda install -c conda-forge opencolorio
