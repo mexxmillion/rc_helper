@@ -19,6 +19,11 @@ Camera naming
   Stem is sanitised (non-alphanumeric → '_').
   If the sanitised stem is longer than 24 characters, the last 14 chars are used.
   Final name is prefixed with 'cam_'.
+
+Maya ASCII structure
+--------------------
+  All createNode / setAttr blocks must appear before any connectAttr lines.
+  This module splits output into (nodes, connects) and writes them in order.
 """
 
 from __future__ import annotations
@@ -41,55 +46,81 @@ _SHORT_STEM = 14
 def _sanitise_name(stem: str) -> str:
     """Convert a filename stem to a valid Maya node name prefix."""
     sanitised = re.sub(r"[^A-Za-z0-9]", "_", stem)
-    # Trim to last _SHORT_STEM chars if too long
     if len(sanitised) > _MAX_STEM:
         sanitised = sanitised[-_SHORT_STEM:]
-    # Maya names cannot start with a digit
     if sanitised and sanitised[0].isdigit():
         sanitised = "n" + sanitised
     return sanitised
 
 
-def _camera_block(cam: CameraData, png_path: Optional[Path], index: int) -> str:
-    """Return the Maya ASCII text for one camera + image plane."""
+def _camera_block(
+    cam: CameraData,
+    png_path: Optional[Path],
+    index: int,
+) -> tuple[str, str]:
+    """
+    Return (nodes_text, connects_text) for one camera + image plane.
+
+    nodes_text   — all createNode / setAttr lines
+    connects_text — all connectAttr lines (must go after ALL nodes in the file)
+    """
     safe = _sanitise_name(cam.source_stem)
-    grp_name = f"cam_{safe}_grp"
-    cam_name = f"cam_{safe}"
-    shape_name = f"cam_{safe}Shape"
-    ip_name = f"cam_{safe}_imgPlane"
+    cam_xform = f"cam_{safe}"          # camera transform
+    cam_shape = f"cam_{safe}Shape"     # camera shape
+    ip_xform  = f"imagePlane_{safe}"   # imagePlane transform (parented to cam shape)
+    ip_shape  = f"imagePlane_{safe}Shape"  # imagePlane shape
 
     tx, ty, tz = cam.position_cm
     rx, ry, rz = cam.euler_xyz_deg
     fl = cam.focal_length_35mm
 
-    lines: list[str] = []
+    nodes: list[str] = []
+    connects: list[str] = []
 
-    # ── Transform node ────────────────────────────────────────────────────
-    lines.append(f'createNode transform -n "{grp_name}";')
-    lines.append(f'    setAttr ".t" -type "double3" {tx:.6f} {ty:.6f} {tz:.6f};')
-    lines.append(f'    setAttr ".r" -type "double3" {rx:.6f} {ry:.6f} {rz:.6f};')
-    lines.append("")
+    # ── Camera transform ──────────────────────────────────────────────────
+    nodes.append(f'createNode transform -n "{cam_xform}";')
+    nodes.append(f'\trename -uid "CAM_XFORM_{index:04d}";')
+    nodes.append(f'\tsetAttr ".t" -type "double3" {tx:.6f} {ty:.6f} {tz:.6f};')
+    nodes.append(f'\tsetAttr ".r" -type "double3" {rx:.6f} {ry:.6f} {rz:.6f};')
+    nodes.append("")
 
-    # ── Camera shape ──────────────────────────────────────────────────────
-    lines.append(f'createNode camera -n "{shape_name}" -p "{grp_name}";')
-    lines.append(f'    rename -uid "CAM_{index:04d}";')
-    lines.append(f'    setAttr ".fl" {fl:.6f};')
-    lines.append(f'    setAttr ".cap" -type "double2" {_FILM_H_INCH:.6f} {_FILM_V_INCH:.6f};')
-    lines.append("")
+    # ── Camera shape (child of transform) ────────────────────────────────
+    nodes.append(f'createNode camera -n "{cam_shape}" -p "{cam_xform}";')
+    nodes.append(f'\trename -uid "CAM_SHAPE_{index:04d}";')
+    nodes.append(f'\tsetAttr ".fl" {fl:.6f};')
+    nodes.append(f'\tsetAttr ".cap" -type "double2" {_FILM_H_INCH:.6f} {_FILM_V_INCH:.6f};')
+    nodes.append("")
 
-    # ── Image plane (only when a PNG was produced) ────────────────────────
+    # ── Image plane (only when a PNG path is available) ───────────────────
+    # Structure mirrors Maya's own export:
+    #   imagePlane transform → parented to camera SHAPE
+    #   imagePlane shape     → parented to imagePlane transform
+    # connectAttr lines are returned separately and written at end of file.
     if png_path is not None:
         png_str = str(png_path).replace("\\", "/")
-        lines.append(f'createNode imagePlane -n "{ip_name}" -p "{shape_name}";')
-        lines.append(f'    setAttr ".fn" -type "string" "{png_str}";')
-        lines.append(f'    setAttr ".fc" 1;')          # frame offset
-        lines.append(f'    setAttr ".d" 100;')          # depth
-        lines.append(f'    setAttr ".fit" 4;')          # fit = to size
-        lines.append("")
-        lines.append(f'connectAttr "{ip_name}.message" "{shape_name}.imagePlane" -na;')
-        lines.append("")
 
-    return "\n".join(lines)
+        nodes.append(f'createNode transform -n "{ip_xform}" -p "{cam_shape}";')
+        nodes.append(f'\trename -uid "IP_XFORM_{index:04d}";')
+        nodes.append("")
+
+        nodes.append(f'createNode imagePlane -n "{ip_shape}" -p "{ip_xform}";')
+        nodes.append(f'\trename -uid "IP_SHAPE_{index:04d}";')
+        nodes.append(f'\tsetAttr ".fc" 1;')
+        nodes.append(f'\tsetAttr ".imn" -type "string" "{png_str}";')
+        nodes.append(f'\tsetAttr ".d" 100;')
+        nodes.append(f'\tsetAttr ".fit" 4;')
+        nodes.append(f'\tsetAttr ".s" -type "double2" {_FILM_H_INCH:.6f} {_FILM_V_INCH:.6f};')
+        nodes.append("")
+
+        # Connections — collected here, written at END of file
+        connects.append(f'connectAttr "{ip_shape}.msg" "{cam_shape}.ip" -na;')
+        connects.append(f'connectAttr ":defaultColorMgtGlobals.cme" "{ip_shape}.cme";')
+        connects.append(f'connectAttr ":defaultColorMgtGlobals.cfe" "{ip_shape}.cmcf";')
+        connects.append(f'connectAttr ":defaultColorMgtGlobals.cfp" "{ip_shape}.cmcp";')
+        connects.append(f'connectAttr ":defaultColorMgtGlobals.wsn" "{ip_shape}.ws";')
+        connects.append("")
+
+    return "\n".join(nodes), "\n".join(connects)
 
 
 def write_maya_scene(
@@ -112,10 +143,6 @@ def write_maya_scene(
         Destination .ma file path.
     scene_unit:
         Maya linear unit (default "centimeter").
-
-    Returns
-    -------
-    Path to the written file.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,12 +160,20 @@ fileInfo "product" "RC Helper 0.1.0";
 
 """
 
-    body_parts: list[str] = []
+    all_nodes: list[str] = []
+    all_connects: list[str] = []
+
     for idx, cam in enumerate(cameras):
         png = png_paths.get(cam.source_stem)
-        body_parts.append(_camera_block(cam, png, idx))
+        nodes_text, connects_text = _camera_block(cam, png, idx)
+        all_nodes.append(nodes_text)
+        if connects_text.strip():
+            all_connects.append(connects_text)
 
-    content = header + "\n".join(body_parts)
+    # Maya ASCII rule: ALL createNode/setAttr FIRST, then ALL connectAttr
+    content = header + "\n".join(all_nodes)
+    if all_connects:
+        content += "\n" + "\n".join(all_connects)
 
     output_path.write_text(content, encoding="utf-8")
     return output_path

@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("RC Helper — RealityCapture Data Processor")
-        self.resize(960, 1000)
+        self.resize(1040, 1200)
         self.setStyleSheet(APP_STYLESHEET)
         self._build_ui()
         self._connect()
