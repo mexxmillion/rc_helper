@@ -128,11 +128,17 @@ def _prepare_stmap(
     crop_y = max(0, round((actual_h - src_h) / 2))
     _log(f"  ST map {stm_w}x{stm_h}"
          f" → scaled {actual_w}x{actual_h}"
-         f" → crop centre {src_w}x{src_h}  (crop_y={crop_y})")
+         f" → cut centre {src_w}x{src_h}  (crop_y={crop_y})")
 
     cropped_path = tmp_dir / (stmap.stem + "_stmap_ready.exr")
+    # IMPORTANT: use --cut not --crop.
+    # --crop keeps the y-offset in the EXR data window (ymin=crop_y), so when
+    # --st_warp samples the map by output pixel (px, py), rows py < crop_y
+    # fall outside the data window and return zero → wrong undistortion.
+    # --cut extracts the region AND resets the origin to (0,0), so the full
+    # 3280x2464 data window aligns 1:1 with the output image coordinates.
     _run([oiio, str(scaled_path),
-          "--crop", f"{src_w}x{src_h}+0+{crop_y}",
+          "--cut", f"{src_w}x{src_h}+0+{crop_y}",
           "-d", "float", "-o", str(cropped_path)], _log)
 
     return cropped_path
@@ -327,8 +333,13 @@ def process_image(
                 oiiotool_override=oiiotool_override,
                 log=log,
             )
+            # RC ST maps use named channels U (S) and V (T).
+            # chan_s=0, chan_t=1 picks them by index (U=ch0, V=ch1).
+            # flip_t=1: RC V=0 is at image top (Y-down), oiiotool T=0 is at
+            # bottom (OpenGL/UV), so we must invert T.
             log(f"  Undistorting (ACEScg, flip_t=1): {ready_stmap.name}")
-            cmd += [str(ready_stmap), "--st_warp:flip_t=1"]
+            cmd += [str(ready_stmap),
+                    "--st_warp:chan_s=0:chan_t=1:flip_t=1"]
         elif do_undistort and not matched.has_stmap:
             log(f"  WARNING: no ST map for {matched.source.name}"
                 " — skipping undistortion, colour-converting source directly")
