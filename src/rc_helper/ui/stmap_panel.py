@@ -77,14 +77,15 @@ class StmapPanel(QGroupBox):
         self._pair_tree.setSelectionMode(QAbstractItemView.NoSelection)
         self._pair_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._pair_tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self._pair_tree.setMinimumHeight(600)
+        self._pair_tree.setMinimumHeight(160)
+        self._pair_tree.setMaximumHeight(220)
 
         hdr = self._pair_tree.header()
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
-        root.addWidget(self._pair_tree, stretch=1)
+        root.addWidget(self._pair_tree)
 
     # ── Slots ─────────────────────────────────────────────────────────────
 
