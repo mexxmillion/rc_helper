@@ -61,14 +61,21 @@ def _camera_block(
     """
     Return (nodes_text, connects_text) for one camera + image plane.
 
+    Matches RealityCapture's own Maya ASCII export structure exactly:
+      - imagePlane transform parented to the camera TRANSFORM (not shape)
+      - imagePlane shape parented to the imagePlane transform
+      - connectAttr .msg → .ip  (registers image plane on camera)
+      - connectAttr cameraShape.msg → imagePlaneShape.ltc
+        (makes image plane visible ONLY when looking through that camera)
+
     nodes_text   — all createNode / setAttr lines
     connects_text — all connectAttr lines (must go after ALL nodes in the file)
     """
     safe = _sanitise_name(cam.source_stem)
-    cam_xform = f"cam_{safe}"          # camera transform
-    cam_shape = f"cam_{safe}Shape"     # camera shape
-    ip_xform  = f"imagePlane_{safe}"   # imagePlane transform (parented to cam shape)
-    ip_shape  = f"imagePlane_{safe}Shape"  # imagePlane shape
+    cam_xform = f"cam_{safe}"
+    cam_shape = f"cam_{safe}Shape"
+    ip_xform  = f"imagePlane_{safe}"
+    ip_shape  = f"imagePlane_{safe}Shape"
 
     tx, ty, tz = cam.position_cm
     rx, ry, rz = cam.euler_xyz_deg
@@ -79,47 +86,46 @@ def _camera_block(
 
     # ── Camera transform ──────────────────────────────────────────────────
     nodes.append(f'createNode transform -n "{cam_xform}";')
-    nodes.append(f'\trename -uid "CAM_XFORM_{index:04d}";')
-    nodes.append(f'\tsetAttr ".t" -type "double3" {tx:.6f} {ty:.6f} {tz:.6f};')
-    nodes.append(f'\tsetAttr ".r" -type "double3" {rx:.6f} {ry:.6f} {rz:.6f};')
-    nodes.append("")
+    nodes.append(f'\tsetAttr ".translate" -type "double3" {tx:.6f} {ty:.6f} {tz:.6f};')
+    nodes.append(f'\tsetAttr ".rotate" -type "double3" {rx:.6f} {ry:.6f} {rz:.6f};')
 
     # ── Camera shape (child of transform) ────────────────────────────────
     nodes.append(f'createNode camera -n "{cam_shape}" -p "{cam_xform}";')
-    nodes.append(f'\trename -uid "CAM_SHAPE_{index:04d}";')
-    nodes.append(f'\tsetAttr ".fl" {fl:.6f};')
+    nodes.append(f'\tsetAttr ".focalLength" {fl:.6f};')
     nodes.append(f'\tsetAttr ".cap" -type "double2" {_FILM_H_INCH:.6f} {_FILM_V_INCH:.6f};')
-    nodes.append("")
 
     # ── Image plane (only when a PNG path is available) ───────────────────
-    # Structure mirrors Maya's own export:
-    #   imagePlane transform → parented to camera SHAPE
+    # Structure mirrors RC's export:
+    #   imagePlane transform → parented to camera TRANSFORM (not shape!)
     #   imagePlane shape     → parented to imagePlane transform
-    # connectAttr lines are returned separately and written at end of file.
     if png_path is not None:
         png_str = str(png_path).replace("\\", "/")
 
-        nodes.append(f'createNode transform -n "{ip_xform}" -p "{cam_shape}";')
-        nodes.append(f'\trename -uid "IP_XFORM_{index:04d}";')
-        nodes.append("")
+        # Image plane transform — parented to camera TRANSFORM
+        nodes.append(f'\tcreateNode transform -n "{ip_xform}" -p "{cam_xform}";')
 
-        nodes.append(f'createNode imagePlane -n "{ip_shape}" -p "{ip_xform}";')
-        nodes.append(f'\trename -uid "IP_SHAPE_{index:04d}";')
-        nodes.append(f'\tsetAttr ".fc" 1;')
+        # Image plane shape
+        nodes.append(f'\tcreateNode imagePlane -n "{ip_shape}" -p "{ip_xform}";')
+        nodes.append(f'\tsetAttr -k off ".v";')               # hide from channel box
+        nodes.append(f'\tsetAttr ".fc" 5;')                     # frame cache
         nodes.append(f'\tsetAttr ".imn" -type "string" "{png_str}";')
-        nodes.append(f'\tsetAttr ".d" 100;')
-        nodes.append(f'\tsetAttr ".fit" 4;')
+        nodes.append(f'\tsetAttr ".dic" yes;')                  # display in camera
+        nodes.append(f'\tsetAttr ".d" 100;')                    # depth
         nodes.append(f'\tsetAttr ".s" -type "double2" {_FILM_H_INCH:.6f} {_FILM_V_INCH:.6f};')
-        nodes.append("")
+        nodes.append(f'\tsetAttr ".o" -type "double2" 0 0;')   # offset
+        nodes.append(f'\tsetAttr ".f" 0;')                      # fit: best fit
+        nodes.append(f'\tsetAttr ".w" 36;')                     # width mm (35mm gate)
+        nodes.append(f'\tsetAttr ".h" {36.0 / cam.aspect_ratio:.6f};')  # height from AR
+        nodes.append(f'\tsetAttr ".cs" -type "string" "sRGB";')  # color space
 
         # Connections — collected here, written at END of file
-        connects.append(f'connectAttr "{ip_shape}.msg" "{cam_shape}.ip" -na;')
-        connects.append(f'connectAttr ":defaultColorMgtGlobals.cme" "{ip_shape}.cme";')
-        connects.append(f'connectAttr ":defaultColorMgtGlobals.cfe" "{ip_shape}.cmcf";')
-        connects.append(f'connectAttr ":defaultColorMgtGlobals.cfp" "{ip_shape}.cmcp";')
-        connects.append(f'connectAttr ":defaultColorMgtGlobals.wsn" "{ip_shape}.ws";')
-        connects.append("")
+        # .ip connection: registers image plane on the camera
+        connects.append(f'\tconnectAttr "{ip_shape}.msg" "{cam_shape}.ip" -na;')
+        # .ltc connection: CRITICAL — makes image plane visible ONLY
+        # when looking through this camera (not in other viewports)
+        connects.append(f'\tconnectAttr "{cam_shape}.msg" "{ip_shape}.ltc";')
 
+    nodes.append("")
     return "\n".join(nodes), "\n".join(connects)
 
 
