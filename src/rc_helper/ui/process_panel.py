@@ -192,6 +192,7 @@ class ProcessPanel(QGroupBox):
         errs = result.get("errors", 0)
         done = result.get("processed", 0)
         maya = result.get("maya_file")
+        error_details = result.get("error_details", [])
 
         if aborted:
             self._progress.setMaximum(100)
@@ -205,7 +206,12 @@ class ProcessPanel(QGroupBox):
             self._progress.setValue(100)
             msg = f"Done — {done} processed"
             if errs:
-                msg += f", {errs} errors"
+                # Show which files failed in the status line
+                failed_names = [name for name, _ in error_details[:3]]
+                msg += f", {errs} error(s): {', '.join(failed_names)}"
+                if errs > 3:
+                    msg += f" +{errs - 3} more"
+                msg += "  (see log for details)"
                 self._status_label.setStyleSheet("color: #ff7b8a; font-size: 11px;")
             else:
                 self._status_label.setStyleSheet("color: #3fb950; font-size: 11px;")

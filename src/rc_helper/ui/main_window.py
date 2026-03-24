@@ -21,7 +21,7 @@ Layout
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont, QTextCharFormat
 from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
@@ -154,7 +154,22 @@ class MainWindow(QMainWindow):
         return s
 
     def _append_log(self, msg: str) -> None:
-        self._log.appendPlainText(msg)
+        # Colour-code ERROR and WARNING lines so they stand out
+        cursor = self._log.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+
+        fmt = QTextCharFormat()
+        msg_upper = msg.strip().upper()
+        if "ERROR" in msg_upper:
+            fmt.setForeground(QColor("#ff7b8a"))      # red
+        elif "WARNING" in msg_upper or "WARN" in msg_upper:
+            fmt.setForeground(QColor("#e3a03a"))      # amber
+        elif msg.startswith("="):
+            fmt.setForeground(QColor("#ff7b8a"))      # red for error summary dividers
+        else:
+            fmt.setForeground(QColor("#c8d1db"))      # default light grey
+
+        cursor.insertText(msg + "\n", fmt)
         self._log.verticalScrollBar().setValue(
             self._log.verticalScrollBar().maximum()
         )

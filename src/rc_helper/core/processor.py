@@ -103,6 +103,7 @@ def run(
     cameras: list[CameraData] = []
     png_paths: dict[str, Optional[Path]] = {}
     processed = skipped = errors = 0
+    error_details: list[tuple[str, str]] = []  # (filename, error message)
 
     for idx, ms in enumerate(matched_sets):
         if is_aborted():
@@ -127,7 +128,9 @@ def run(
             png_paths[ms.stem] = result.get("png")
             processed += 1
         except Exception as exc:
-            log(f"  ERROR: {exc}")
+            err_msg = str(exc)
+            log(f"  ERROR: {err_msg}")
+            error_details.append((ms.source.name, err_msg))
             errors += 1
             png_paths[ms.stem] = None
 
@@ -137,7 +140,9 @@ def run(
                 cam = parse_xmp(ms.xmp)
                 cameras.append(cam)
             except Exception as exc:
-                log(f"  XMP parse error: {exc}")
+                err_msg = f"XMP parse: {exc}"
+                log(f"  ERROR: {err_msg}")
+                error_details.append((ms.source.name, err_msg))
 
     progress(total, total)
 
@@ -168,15 +173,27 @@ def run(
                 log(f"  Maya export error: {exc}")
                 errors += 1
 
+    # ── 4. Error summary ─────────────────────────────────────────────────
     aborted = is_aborted()
     if aborted:
-        log(f"Aborted — processed: {processed}, errors: {errors} (remaining images skipped)")
+        log(f"\nAborted — processed: {processed}, errors: {errors} (remaining images skipped)")
     else:
         log(f"\nDone — processed: {processed}, skipped: {skipped}, errors: {errors}")
+
+    if error_details:
+        log(f"\n{'='*60}")
+        log(f"  ERRORS ({len(error_details)}):")
+        log(f"{'='*60}")
+        for filename, err_msg in error_details:
+            log(f"  {filename}")
+            log(f"    → {err_msg}")
+        log(f"{'='*60}")
+
     return {
         "processed": processed,
         "skipped": skipped,
         "errors": errors,
+        "error_details": error_details,
         "maya_file": maya_file,
         "aborted": aborted,
     }
