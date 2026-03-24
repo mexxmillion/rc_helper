@@ -16,6 +16,7 @@ round-trips or temp files are needed after the optional raw decode.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,44 @@ from .file_matcher import MatchedSet
 from .ocio_utils import build_colorconvert_args
 
 LogFn = Callable[[str], None]
+
+
+def _image_size(path: Path, oiiotool_override: Optional[str] = None) -> tuple[int, int]:
+    """
+    Return (width, height) of *path*.
+
+    Tries OpenImageIO Python bindings first (fast, no subprocess), then falls
+    back to ``oiiotool --info`` output parsing.
+
+    Returns (0, 0) if neither method succeeds.
+    """
+    # Fast path — Python OpenImageIO bindings (available in VFX conda env)
+    try:
+        import OpenImageIO as oiio  # type: ignore
+        inp = oiio.ImageInput.open(str(path))
+        if inp:
+            spec = inp.spec()
+            w, h = spec.width, spec.height
+            inp.close()
+            return w, h
+    except Exception:
+        pass
+
+    # Fallback — parse oiiotool --info
+    try:
+        tool = _find_oiiotool(oiiotool_override)
+        result = subprocess.run(
+            [tool, "--info", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        # Output line: "<file> : WxH, N channel, ..."  OR  "... WIDTHxHEIGHT ..."
+        m = re.search(r"\b(\d+)\s*x\s*(\d+)\b", result.stdout)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+
+    return 0, 0
 
 
 def _find_oiiotool(override: Optional[str] = None) -> str:
@@ -201,9 +240,18 @@ def process_image(
 
         # 2b. Undistort in ACEScg (linear-light bilinear interpolation).
         #     flip_t=1: RC ST maps have T=0 at top; oiiotool expects T=0 at bottom.
+        #     The ST map must be the same pixel size as the source so that each
+        #     ST-map texel maps 1:1 to a source pixel.  Resize if they differ.
         if do_undistort and matched.has_stmap:
+            src_w, src_h = _image_size(working_src, oiiotool_override)
+            stm_w, stm_h = _image_size(matched.stmap, oiiotool_override)
+            if src_w and src_h and (stm_w != src_w or stm_h != src_h):
+                log(f"  ST map {stm_w}x{stm_h} → resizing to {src_w}x{src_h} to match source")
+                resize_flag = ["--resize", f"{src_w}x{src_h}"]
+            else:
+                resize_flag = []
             log(f"  Undistorting (ACEScg, flip_t=1): {matched.stmap.name}")
-            cmd += [str(matched.stmap), "--st_warp:flip_t=1"]
+            cmd += [str(matched.stmap)] + resize_flag + ["--st_warp:flip_t=1"]
         elif do_undistort and not matched.has_stmap:
             log(f"  WARNING: no ST map for {matched.source.name}"
                 " — skipping undistortion, colour-converting source directly")
