@@ -85,7 +85,17 @@ def run(
     matched_sets = find_matched_sets(settings.source_dir, settings.stmap_folder)
 
     total = len(matched_sets)
-    log(f"Found {total} source images.")
+    n_stmap = sum(1 for m in matched_sets if m.has_stmap)
+    n_xmp   = sum(1 for m in matched_sets if m.has_xmp)
+    n_raw   = sum(1 for m in matched_sets if m.is_raw)
+
+    log(f"Found {total} source images  ({n_raw} raw  |  {n_stmap} ST maps  |  {n_xmp} XMP)")
+
+    if n_stmap == 0 and settings.do_undistort:
+        log("  NOTE: no ST maps found — undistortion will be skipped for all images.")
+    if n_xmp == 0 and settings.do_maya_export:
+        log("  NOTE: no XMP sidecars found — Maya export will be skipped.")
+
     if total == 0:
         return {"processed": 0, "skipped": 0, "errors": 0, "maya_file": None}
 
@@ -146,14 +156,17 @@ def run(
                 maya_png_paths[ms.stem] = png_fallback_dir / (ms.stem + ".png")
 
     maya_file: Optional[Path] = None
-    if settings.do_maya_export and cameras and settings.maya_path:
-        log(f"\nWriting Maya scene: {settings.maya_path}")
-        try:
-            maya_file = write_maya_scene(cameras, maya_png_paths, settings.maya_path)
-            log(f"  Maya scene written: {maya_file}")
-        except Exception as exc:
-            log(f"  Maya export error: {exc}")
-            errors += 1
+    if settings.do_maya_export and settings.maya_path:
+        if not cameras:
+            log("\nMaya export skipped — no XMP data was parsed (no .xmp sidecars found).")
+        else:
+            log(f"\nWriting Maya scene: {settings.maya_path}")
+            try:
+                maya_file = write_maya_scene(cameras, maya_png_paths, settings.maya_path)
+                log(f"  Maya scene written: {maya_file}")
+            except Exception as exc:
+                log(f"  Maya export error: {exc}")
+                errors += 1
 
     aborted = is_aborted()
     if aborted:

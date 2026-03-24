@@ -62,33 +62,45 @@ class ProcessPanel(QGroupBox):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # ── Toggle row ────────────────────────────────────────────────────
-        toggle_row = QHBoxLayout()
+        # ── Toggle rows ───────────────────────────────────────────────────
+        # Row 1: image processing operations
+        img_row = QHBoxLayout()
 
-        self._undistort_cb = QCheckBox("Undistort images")
+        self._undistort_cb = QCheckBox("Undistort  (ST map warp)")
         self._undistort_cb.setChecked(True)
         self._undistort_cb.setToolTip(
-            "Apply ST map warp to undistort each source image."
+            "Apply oiiotool --st_warp using the matched ST map.\n"
+            "Automatically skipped if no ST map is found for an image."
         )
-        toggle_row.addWidget(self._undistort_cb)
+        img_row.addWidget(self._undistort_cb)
 
-        self._exr_cb = QCheckBox("Export EXR (ACEScg)")
+        self._exr_cb = QCheckBox("Export EXR  (ACEScg)")
         self._exr_cb.setChecked(True)
-        toggle_row.addWidget(self._exr_cb)
+        self._exr_cb.setToolTip("Write ACEScg linear EXR to the EXR output folder.")
+        img_row.addWidget(self._exr_cb)
 
-        self._png_cb = QCheckBox("Export PNG (sRGB display)")
+        self._png_cb = QCheckBox("Export PNG  (sRGB display)")
         self._png_cb.setChecked(True)
-        toggle_row.addWidget(self._png_cb)
+        self._png_cb.setToolTip("Write sRGB display PNG to the PNG output folder.")
+        img_row.addWidget(self._png_cb)
 
-        self._maya_cb = QCheckBox("Generate Maya scene")
+        img_row.addStretch()
+        root.addLayout(img_row)
+
+        # Row 2: Maya export (separate since it needs XMP)
+        maya_row = QHBoxLayout()
+
+        self._maya_cb = QCheckBox("Generate Maya scene  (requires XMP sidecars)")
         self._maya_cb.setChecked(True)
         self._maya_cb.setToolTip(
-            "Parse XMP sidecars and write a Maya ASCII .ma with cameras and image planes."
+            "Parse RC .xmp sidecars and write a Maya ASCII .ma with cameras\n"
+            "and image planes linked to the undistorted PNGs.\n"
+            "Automatically skipped if no XMP files are found."
         )
-        toggle_row.addWidget(self._maya_cb)
+        maya_row.addWidget(self._maya_cb)
 
-        toggle_row.addStretch()
-        root.addLayout(toggle_row)
+        maya_row.addStretch()
+        root.addLayout(maya_row)
 
         # ── Progress + button row ─────────────────────────────────────────
         action_row = QHBoxLayout()
