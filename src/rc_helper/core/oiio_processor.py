@@ -67,6 +67,56 @@ def _image_size(path: Path, oiiotool_override: Optional[str] = None) -> tuple[in
     return 0, 0
 
 
+def _fit_stmap_args(
+    source: Path,
+    stmap: Path,
+    oiiotool_override: Optional[str] = None,
+    log: Optional[LogFn] = None,
+) -> list[str]:
+    """
+    Build the oiiotool args needed to reformat the ST map so it exactly
+    matches the source image dimensions before --st_warp.
+
+    Logic:
+      1. Query source image  → target width / height
+      2. Query ST map        → current width / height
+      3. If they already match, return []
+      4. Otherwise:
+           a. Uniform scale ST map so its width == source width
+              (--resize Wx0  keeps aspect ratio)
+           b. Centre-crop the height to source height
+              (--crop WxH+0+Y  trims equally top and bottom)
+
+    This mirrors Nuke's Reformat node set to "width" + center + crop.
+    Non-uniform scaling is never used — it would distort UV coordinates.
+    """
+    _log = log or (lambda s: None)
+
+    src_w, src_h = _image_size(source, oiiotool_override)
+    stm_w, stm_h = _image_size(stmap,  oiiotool_override)
+
+    if not (src_w and src_h and stm_w and stm_h):
+        _log("  WARNING: could not determine image sizes — skipping ST map reformat")
+        return []
+
+    if stm_w == src_w and stm_h == src_h:
+        return []   # already the right size
+
+    # Step 1: uniform scale by width
+    scaled_h = round(stm_h * src_w / stm_w)
+    # Step 2: centre-crop height
+    crop_y = max(0, (scaled_h - src_h) // 2)
+
+    _log(f"  ST map {stm_w}x{stm_h}"
+         f" → fit-width {src_w}x{scaled_h}"
+         f" → crop centre {src_w}x{src_h}  (y offset {crop_y})")
+
+    return [
+        "--resize", f"{src_w}x0",
+        "--crop",   f"{src_w}x{src_h}+0+{crop_y}",
+    ]
+
+
 def _find_oiiotool(override: Optional[str] = None) -> str:
     """
     Locate oiiotool.
@@ -250,21 +300,11 @@ def process_image(
         #       2. Crop the (now slightly taller) height to the source height,
         #          taking from the centre so both sides are trimmed equally.
         if do_undistort and matched.has_stmap:
-            src_w, src_h = _image_size(working_src, oiiotool_override)
-            stm_w, stm_h = _image_size(matched.stmap, oiiotool_override)
-            fit_flags: list[str] = []
-            if src_w and src_h and (stm_w != src_w or stm_h != src_h):
-                # Step 1: uniform scale by width (height=0 → auto-preserve aspect)
-                scaled_h = round(stm_h * src_w / stm_w)
-                # Step 2: crop excess height from centre
-                crop_y = max(0, (scaled_h - src_h) // 2)
-                log(f"  ST map {stm_w}x{stm_h}"
-                    f" → fit-width {src_w}x{scaled_h}"
-                    f" → crop centre {src_w}x{src_h} (offset y={crop_y})")
-                fit_flags = [
-                    "--resize", f"{src_w}x0",
-                    "--crop",   f"{src_w}x{src_h}+0+{crop_y}",
-                ]
+            fit_flags = _fit_stmap_args(
+                working_src, matched.stmap,
+                oiiotool_override=oiiotool_override,
+                log=log,
+            )
             log(f"  Undistorting (ACEScg, flip_t=1): {matched.stmap.name}")
             cmd += [str(matched.stmap)] + fit_flags + ["--st_warp:flip_t=1"]
         elif do_undistort and not matched.has_stmap:
