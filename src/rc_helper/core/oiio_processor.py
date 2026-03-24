@@ -108,9 +108,16 @@ def _prepare_stmap(
 
     oiio = _find_oiiotool(oiiotool_override)
 
+    # ── Pass 0: extract U,V channels explicitly ──────────────────────────
+    # RC ST maps use named channels (U, V) not RGBA.  Extract by name so
+    # any extra channels are stripped and chan_s=0, chan_t=1 is unambiguous.
+    ch_path = tmp_dir / (stmap.stem + "_stmap_uv.exr")
+    _run([oiio, str(stmap), "--ch", "U,V",
+          "-d", "float", "-o", str(ch_path)], _log)
+
     # ── Pass 1: uniform scale to match source width ──────────────────────
     scaled_path = tmp_dir / (stmap.stem + "_stmap_scaled.exr")
-    _run([oiio, str(stmap), "--resize", f"{src_w}x0",
+    _run([oiio, str(ch_path), "--resize", f"{src_w}x0",
           "-d", "float", "-o", str(scaled_path)], _log)
 
     # Query the height oiiotool ACTUALLY produced (may differ from round())
@@ -196,14 +203,36 @@ def convert_raw_to_linear(
     dst: Path,
     log: Optional[LogFn] = None,
     oiiotool_override: Optional[str] = None,
+    ocio_config: Optional[str] = None,
 ) -> Path:
     """
-    Read a camera-raw file with oiiotool (via libraw) and write a linear EXR.
-    oiiotool reads raw files natively when built with libraw support.
+    Read a camera-raw file with oiiotool (via libraw) and write an ACEScg EXR.
+
+    Pipeline (matches maya_lineup_tol.py proven workflow):
+      -iconfig raw:ColorSpace ACES    → decode into ACES2065-1 linear
+      -iconfig raw:use_camera_wb 1    → use the camera's white balance from EXIF
+      -iconfig raw:HighlightMode 0    → clip highlights (safe default)
+      --colorconvert ACES2065-1 → ACEScg  → convert to working space
+      --compression zips -d half      → VFX-standard output format
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
     oiio = _find_oiiotool(oiiotool_override)
-    cmd = [oiio, str(src), "-o", str(dst)]
+    cmd = [
+        oiio,
+        "-iconfig", "raw:ColorSpace", "ACES",
+        "-iconfig", "raw:use_camera_wb", "1",
+        "-iconfig", "raw:HighlightMode", "0",
+        "-i", str(src),
+    ]
+    # OCIO config for the ACES2065-1 → ACEScg conversion
+    if ocio_config and Path(ocio_config).exists():
+        cmd += ["--colorconfig", ocio_config]
+    cmd += [
+        "--colorconvert", "ACES - ACES2065-1", "ACES - ACEScg",
+        "--compression", "zips",
+        "-d", "half",
+        "-o", str(dst),
+    ]
     _run(cmd, log)
     return dst
 
@@ -293,15 +322,21 @@ def process_image(
     with tempfile.TemporaryDirectory(prefix="rc_helper_") as tmp:
         tmp_dir = Path(tmp)
 
-        # ── Step 1: raw decode → scene-linear EXR ───────────────────────
+        # ── Step 1: raw decode → ACEScg EXR ─────────────────────────────
+        # Raw files go through the full ACES libraw pipeline (ACES2065-1 →
+        # ACEScg) in convert_raw_to_linear, so they are ALREADY in ACEScg
+        # and must NOT be color-converted again in step 2a.
         if matched.is_raw:
-            log(f"  Raw decode: {matched.source.name}")
+            log(f"  Raw decode (ACES → ACEScg): {matched.source.name}")
             raw_linear = tmp_dir / (matched.stem + "_raw_linear.exr")
             convert_raw_to_linear(matched.source, raw_linear, log,
-                                   oiiotool_override=oiiotool_override)
+                                   oiiotool_override=oiiotool_override,
+                                   ocio_config=ocio_config)
             working_src = raw_linear
+            already_acescg = True
         else:
             working_src = matched.source
+            already_acescg = False
 
         # ── Step 2: build chained oiiotool command ───────────────────────
         # Shared --colorconfig flag (set once, valid for the whole command)
@@ -311,9 +346,12 @@ def process_image(
 
         cmd: list[str] = [oiio, str(working_src)]
 
-        # 2a. Convert to ACEScg linear — interpolation happens here
-        log(f"  {source_cs!r} → ACEScg linear")
-        cmd += config_args + ["--colorconvert", source_cs, acescg_cs]
+        # 2a. Convert to ACEScg linear (skip for raw — already ACEScg)
+        if not already_acescg:
+            log(f"  {source_cs!r} → ACEScg linear")
+            cmd += config_args + ["--colorconvert", source_cs, acescg_cs]
+        else:
+            log(f"  Already ACEScg (raw decode)")
 
         # 2b. Undistort in ACEScg (linear-light bilinear interpolation).
         #     flip_t=1: RC ST maps have T=0 at top; oiiotool expects T=0 at bottom.
@@ -344,12 +382,12 @@ def process_image(
             log(f"  WARNING: no ST map for {matched.source.name}"
                 " — skipping undistortion, colour-converting source directly")
 
-        # 2c. Write ACEScg EXR (image is already in working space, no extra convert)
+        # 2c. Write ACEScg EXR — zips compression, half float (VFX standard)
         if exr_output_dir is not None:
             exr_output_dir.mkdir(parents=True, exist_ok=True)
             out_exr = exr_output_dir / (matched.stem + ".exr")
             log(f"  Writing ACEScg EXR: {out_exr.name}")
-            cmd += ["-o", str(out_exr)]
+            cmd += ["--compression", "zips", "-d", "half", "-o", str(out_exr)]
             results["exr"] = out_exr
 
         # 2d. Display transform ACEScg → sRGB, write PNG
