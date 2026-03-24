@@ -24,8 +24,10 @@ def main() -> int:
     app.setApplicationVersion("0.1.0")
     app.setOrganizationName("VFX")
 
-    # Enable high-DPI scaling
-    app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    # High-DPI pixmaps — attribute removed in Qt6, set only if it exists
+    _hdpi = getattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps", None)
+    if _hdpi is not None:
+        app.setAttribute(_hdpi, True)
 
     window = MainWindow()
     window.show()
