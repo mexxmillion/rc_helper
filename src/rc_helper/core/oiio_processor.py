@@ -240,18 +240,33 @@ def process_image(
 
         # 2b. Undistort in ACEScg (linear-light bilinear interpolation).
         #     flip_t=1: RC ST maps have T=0 at top; oiiotool expects T=0 at bottom.
-        #     The ST map must be the same pixel size as the source so that each
-        #     ST-map texel maps 1:1 to a source pixel.  Resize if they differ.
+        #
+        #     RC ST maps are often exported at a slightly different resolution/aspect
+        #     than the source images.  We must NOT non-uniform scale — that would
+        #     stretch the UV coords and produce wrong undistortion.
+        #
+        #     Correct approach (mirrors Nuke Reformat "width" + center + crop):
+        #       1. Uniform scale the ST map so its WIDTH matches the source width.
+        #       2. Crop the (now slightly taller) height to the source height,
+        #          taking from the centre so both sides are trimmed equally.
         if do_undistort and matched.has_stmap:
             src_w, src_h = _image_size(working_src, oiiotool_override)
             stm_w, stm_h = _image_size(matched.stmap, oiiotool_override)
+            fit_flags: list[str] = []
             if src_w and src_h and (stm_w != src_w or stm_h != src_h):
-                log(f"  ST map {stm_w}x{stm_h} → resizing to {src_w}x{src_h} to match source")
-                resize_flag = ["--resize", f"{src_w}x{src_h}"]
-            else:
-                resize_flag = []
+                # Step 1: uniform scale by width (height=0 → auto-preserve aspect)
+                scaled_h = round(stm_h * src_w / stm_w)
+                # Step 2: crop excess height from centre
+                crop_y = max(0, (scaled_h - src_h) // 2)
+                log(f"  ST map {stm_w}x{stm_h}"
+                    f" → fit-width {src_w}x{scaled_h}"
+                    f" → crop centre {src_w}x{src_h} (offset y={crop_y})")
+                fit_flags = [
+                    "--resize", f"{src_w}x0",
+                    "--crop",   f"{src_w}x{src_h}+0+{crop_y}",
+                ]
             log(f"  Undistorting (ACEScg, flip_t=1): {matched.stmap.name}")
-            cmd += [str(matched.stmap)] + resize_flag + ["--st_warp:flip_t=1"]
+            cmd += [str(matched.stmap)] + fit_flags + ["--st_warp:flip_t=1"]
         elif do_undistort and not matched.has_stmap:
             log(f"  WARNING: no ST map for {matched.source.name}"
                 " — skipping undistortion, colour-converting source directly")
