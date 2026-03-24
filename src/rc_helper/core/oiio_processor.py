@@ -67,54 +67,75 @@ def _image_size(path: Path, oiiotool_override: Optional[str] = None) -> tuple[in
     return 0, 0
 
 
-def _fit_stmap_args(
+def _prepare_stmap(
     source: Path,
     stmap: Path,
+    tmp_dir: Path,
     oiiotool_override: Optional[str] = None,
     log: Optional[LogFn] = None,
-) -> list[str]:
+) -> Path:
     """
-    Build the oiiotool args needed to reformat the ST map so it exactly
-    matches the source image dimensions before --st_warp.
+    Reformat the ST map to exactly match *source* dimensions, mirroring
+    Nuke's Reformat node (resize_type=width, center=on).
 
-    Logic:
-      1. Query source image  → target width / height
-      2. Query ST map        → current width / height
-      3. If they already match, return []
-      4. Otherwise:
-           a. Uniform scale ST map so its width == source width
-              (--resize Wx0  keeps aspect ratio)
-           b. Centre-crop the height to source height
-              (--crop WxH+0+Y  trims equally top and bottom)
+    Two-pass approach — avoids rounding errors in crop offset:
 
-    This mirrors Nuke's Reformat node set to "width" + center + crop.
-    Non-uniform scaling is never used — it would distort UV coordinates.
+      Pass 1  --resize Wx0
+              Uniform scale so ST map width == source width.
+              Height is auto-computed by oiiotool (may differ from our
+              Python estimate due to internal ceil/floor).
+
+      Query   Read the actual height oiiotool produced from the temp file.
+
+      Pass 2  --crop WxH+0+Y
+              Centre-crop using the REAL scaled height so both passes
+              agree on the same integer, eliminating the sub-pixel drift
+              that caused the +Y offset vs Nuke.
+
+    Returns the path to a ready-to-use temp EXR (original if no resize needed).
     """
     _log = log or (lambda s: None)
 
     src_w, src_h = _image_size(source, oiiotool_override)
-    stm_w, stm_h = _image_size(stmap,  oiiotool_override)
+    stm_w, stm_h = _image_size(stmap, oiiotool_override)
 
     if not (src_w and src_h and stm_w and stm_h):
-        _log("  WARNING: could not determine image sizes — skipping ST map reformat")
-        return []
+        _log("  WARNING: could not query image sizes — using ST map as-is")
+        return stmap
 
     if stm_w == src_w and stm_h == src_h:
-        return []   # already the right size
+        return stmap  # already matches, no work needed
 
-    # Step 1: uniform scale by width
-    scaled_h = round(stm_h * src_w / stm_w)
-    # Step 2: centre-crop height
-    crop_y = max(0, (scaled_h - src_h) // 2)
+    oiio = _find_oiiotool(oiiotool_override)
 
+    # ── Pass 1: uniform scale to match source width ──────────────────────
+    scaled_path = tmp_dir / (stmap.stem + "_stmap_scaled.exr")
+    _run([oiio, str(stmap), "--resize", f"{src_w}x0",
+          "-d", "float", "-o", str(scaled_path)], _log)
+
+    # Query the height oiiotool ACTUALLY produced (may differ from round())
+    actual_w, actual_h = _image_size(scaled_path, oiiotool_override)
+    if not actual_h:
+        _log("  WARNING: could not query scaled ST map size — using as-is")
+        return scaled_path
+
+    if actual_h == src_h:
+        return scaled_path  # lucky exact match after scale
+
+    # ── Pass 2: centre-crop to source height ─────────────────────────────
+    # Use round() for the half-split so we match Nuke's continuous centering
+    # (Nuke: offset = (scaled_h - target_h) / 2.0, not integer division).
+    crop_y = max(0, round((actual_h - src_h) / 2))
     _log(f"  ST map {stm_w}x{stm_h}"
-         f" → fit-width {src_w}x{scaled_h}"
-         f" → crop centre {src_w}x{src_h}  (y offset {crop_y})")
+         f" → scaled {actual_w}x{actual_h}"
+         f" → crop centre {src_w}x{src_h}  (crop_y={crop_y})")
 
-    return [
-        "--resize", f"{src_w}x0",
-        "--crop",   f"{src_w}x{src_h}+0+{crop_y}",
-    ]
+    cropped_path = tmp_dir / (stmap.stem + "_stmap_ready.exr")
+    _run([oiio, str(scaled_path),
+          "--crop", f"{src_w}x{src_h}+0+{crop_y}",
+          "-d", "float", "-o", str(cropped_path)], _log)
+
+    return cropped_path
 
 
 def _find_oiiotool(override: Optional[str] = None) -> str:
@@ -300,13 +321,14 @@ def process_image(
         #       2. Crop the (now slightly taller) height to the source height,
         #          taking from the centre so both sides are trimmed equally.
         if do_undistort and matched.has_stmap:
-            fit_flags = _fit_stmap_args(
-                working_src, matched.stmap,
+            log(f"  Preparing ST map: {matched.stmap.name}")
+            ready_stmap = _prepare_stmap(
+                working_src, matched.stmap, tmp_dir,
                 oiiotool_override=oiiotool_override,
                 log=log,
             )
-            log(f"  Undistorting (ACEScg, flip_t=1): {matched.stmap.name}")
-            cmd += [str(matched.stmap)] + fit_flags + ["--st_warp:flip_t=1"]
+            log(f"  Undistorting (ACEScg, flip_t=1): {ready_stmap.name}")
+            cmd += [str(ready_stmap), "--st_warp:flip_t=1"]
         elif do_undistort and not matched.has_stmap:
             log(f"  WARNING: no ST map for {matched.source.name}"
                 " — skipping undistortion, colour-converting source directly")
